@@ -30,6 +30,7 @@ import (
 type cScreen struct {
 	in         syscall.Handle
 	out        syscall.Handle
+	out_buffer []uint16
 	cancelflag syscall.Handle
 	scandone   chan struct{}
 	evch       chan Event
@@ -170,6 +171,8 @@ func (s *cScreen) Init() error {
 		return e
 	}
 	s.out = out
+
+	s.out_buffer = make([]uint16, 0)
 
 	s.truecolor = true
 
@@ -327,7 +330,7 @@ type rect struct {
 
 func (s *cScreen) emitVtString(vs string) {
 	esc := utf16.Encode([]rune(vs))
-	syscall.WriteConsole(s.out, &esc[0], uint32(len(esc)), nil, nil)
+	s.out_buffer = append(s.out_buffer, esc...)
 }
 
 func (s *cScreen) showCursor() {
@@ -353,6 +356,7 @@ func (s *cScreen) ShowCursor(x, y int) {
 		s.cury = y
 	}
 	s.doCursor()
+	s.flushOutBuffer()
 	s.Unlock()
 }
 
@@ -842,12 +846,22 @@ func (s *cScreen) writeString(x, y int, style Style, ch []uint16) {
 
 	if s.vten {
 		s.sendVtStyle(style)
+		s.out_buffer = append(s.out_buffer, ch...)
 	} else {
 		procSetConsoleTextAttribute.Call(
 			uintptr(s.out),
 			uintptr(s.mapStyle(style)))
+		syscall.WriteConsole(s.out, &ch[0], uint32(len(ch)), nil, nil)
 	}
-	syscall.WriteConsole(s.out, &ch[0], uint32(len(ch)), nil, nil)
+}
+
+func (s *cScreen) flushOutBuffer() {
+	if len(s.out_buffer) <= 0 {
+		return
+	}
+
+	syscall.WriteConsole(s.out, &s.out_buffer[0], uint32(len(s.out_buffer)), nil, nil)
+	s.out_buffer = s.out_buffer[:0]
 }
 
 func (s *cScreen) draw() {
@@ -917,6 +931,7 @@ func (s *cScreen) Show() {
 		s.resize()
 		s.draw()
 		s.doCursor()
+		s.flushOutBuffer()
 	}
 	s.Unlock()
 }
@@ -929,6 +944,7 @@ func (s *cScreen) Sync() {
 		s.resize()
 		s.draw()
 		s.doCursor()
+		s.flushOutBuffer()
 	}
 	s.Unlock()
 }
